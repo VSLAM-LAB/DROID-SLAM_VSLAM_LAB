@@ -1,6 +1,8 @@
 import sys
 sys.path.append('droid_slam')
 
+import socket
+from loguru import logger
 import cv2
 import numpy as np
 from collections import OrderedDict
@@ -26,14 +28,18 @@ from torch.nn.parallel import DistributedDataParallel as DDP
 
 
 def setup_ddp(gpu, args):
-    dist.init_process_group(                                   
-    	backend='nccl',                                         
-   		init_method='env://',     
-    	world_size=args.world_size,                              
+    dist.init_process_group(
+    	backend='nccl',
+   		init_method='env://',
+    	world_size=args.world_size,
     	rank=gpu)
 
     torch.manual_seed(0)
     torch.cuda.set_device(gpu)
+
+    logger.info(f"[rank {dist.get_rank()}/{dist.get_world_size()}] "
+                f"host={socket.gethostname()} gpu={gpu} ({torch.cuda.get_device_name(gpu)}) "
+                f"backend={dist.get_backend()}")
 
 def show_image(image):
     image = image.permute(1, 2, 0).cpu().numpy()
@@ -55,8 +61,15 @@ def train(gpu, args):
     model = DDP(model, device_ids=[gpu], find_unused_parameters=False)
 
     if args.ckpt is not None:
-        model.load_state_dict(torch.load(args.ckpt))
-
+        state_dict = torch.load(args.ckpt)
+        for key in ["module.update.weight.2.weight", "module.update.weight.2.bias",
+                    "module.update.delta.2.weight", "module.update.delta.2.bias"]:
+            if key in state_dict and state_dict[key].shape[0] > 2:
+                logger.warning(f"Slicing checkpoint tensor '{key}' from "
+                               f"{tuple(state_dict[key].shape)} to first 2 output channels.")
+                state_dict[key] = state_dict[key][:2]
+        model.load_state_dict(state_dict)
+    exit(0)
     # fetch dataloader
     db = dataset_factory(['tartan'], datapath=args.datapath, n_frames=args.n_frames, fmin=args.fmin, fmax=args.fmax)
 
@@ -67,10 +80,10 @@ def train(gpu, args):
 
     # fetch optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
-    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer, 
+    scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
         args.lr, args.steps, pct_start=0.01, cycle_momentum=False)
 
-    logger = Logger(args.name, scheduler)
+    train_logger = Logger(args.name, scheduler)
     should_keep_training = True
     total_steps = 0
 
@@ -87,12 +100,12 @@ def train(gpu, args):
             # randomize frame graph
             if np.random.rand() < 0.5:
                 graph = build_frame_graph(poses, disps, intrinsics, num=args.edges)
-            
+
             else:
                 graph = OrderedDict()
                 for i in range(N):
                     graph[i] = [j for j in range(N) if i!=j and abs(i-j) <= 2]
-            
+
             # fix first to camera poses
             Gs.data[:,0] = Ps.data[:,0].clone()
             Gs.data[:,1:] = Ps.data[:,[1]].clone()
@@ -102,9 +115,9 @@ def train(gpu, args):
             r = 0
             while r < args.restart_prob:
                 r = rng.random()
-                
+
                 intrinsics0 = intrinsics / 8.0
-                poses_est, disps_est, residuals = model(Gs, images, disp0, intrinsics0, 
+                poses_est, disps_est, residuals = model(Gs, images, disp0, intrinsics0,
                     graph, num_steps=args.iters, fixedp=2)
 
                 geo_loss, geo_metrics = losses.geodesic_loss(Ps, poses_est, graph, do_scale=False)
@@ -125,11 +138,11 @@ def train(gpu, args):
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             optimizer.step()
             scheduler.step()
-            
+
             total_steps += 1
 
             if gpu == 0:
-                logger.push(metrics)
+                train_logger.push(metrics)
 
             if total_steps % 10000 == 0 and gpu == 0:
                 PATH = 'checkpoints/%s_%06d.pth' % (args.name, total_steps)
@@ -140,9 +153,11 @@ def train(gpu, args):
                 break
 
     dist.destroy_process_group()
-                
+
 
 if __name__ == '__main__':
+    logger.info("Executing train.py ...")
+
     import argparse
     parser = argparse.ArgumentParser()
     parser.add_argument('--name', default='bla', help='name your experiment')
@@ -171,15 +186,27 @@ if __name__ == '__main__':
 
     args = parser.parse_args()
 
+    available_gpus = torch.cuda.device_count()
+    if args.gpus > available_gpus:
+        logger.error(f"Requested --gpus={args.gpus} but only {available_gpus} GPU(s) are available.")
+        raise SystemExit(1)
+    elif args.gpus < available_gpus:
+        logger.warning(f"--gpus={args.gpus} but {available_gpus} GPU(s) are available; "
+                       f"{available_gpus - args.gpus} will be left unused.")
+
     args.world_size = args.gpus
-    print(args)
+
+    logger.info("Training arguments:")
+    for action in parser._actions:
+        if action.dest == "help":
+            continue
+        value = getattr(args, action.dest)
+        logger.info(f"  {action.dest:<15} {str(value):<20} {action.help or ''}")
+    logger.info(f"  {'world_size':<15} {str(args.world_size):<20} number of GPUs used for distributed training")
 
     import os
     if not os.path.isdir('checkpoints'):
         os.mkdir('checkpoints')
-
-    args = parser.parse_args()
-    args.world_size = args.gpus
 
     os.environ['MASTER_ADDR'] = 'localhost'
     os.environ['MASTER_PORT'] = '12356'
