@@ -13,6 +13,8 @@ import json
 import pickle
 import os.path as osp
 
+from loguru import logger
+
 from .augmentation import RGBDAugmentor
 from .rgbd_utils import *
 
@@ -26,7 +28,10 @@ class RGBDDataset(data.Dataset):
         self.n_frames = n_frames
         self.fmin = fmin # exclude very easy examples
         self.fmax = fmax # exclude very hard examples
-        
+
+        logger.info(f"Building RGBDDataset '{name}' from '{datapath}' "
+                    f"(n_frames={n_frames}, fmin={fmin}, fmax={fmax}, do_aug={do_aug})")
+
         if do_aug:
             self.aug = RGBDAugmentor(crop_size=crop_size)
 
@@ -34,19 +39,24 @@ class RGBDDataset(data.Dataset):
         cur_path = osp.dirname(osp.abspath(__file__))
         if not os.path.isdir(osp.join(cur_path, 'cache')):
             os.mkdir(osp.join(cur_path, 'cache'))
-        
+
         cache_path = osp.join(cur_path, 'cache', '{}.pickle'.format(self.name))
 
         if osp.isfile(cache_path):
+            logger.info(f"Loading cached scene info from '{cache_path}'")
             scene_info = pickle.load(open(cache_path, 'rb'))[0]
         else:
+            logger.info(f"No cache found at '{cache_path}', building dataset index")
             scene_info = self._build_dataset()
             with open(cache_path, 'wb') as cachefile:
                 pickle.dump((scene_info,), cachefile)
 
         self.scene_info = scene_info
         self._build_dataset_index()
-                
+
+        logger.info(f"RGBDDataset '{name}' ready: {len(self.scene_info)} scenes, "
+                    f"{len(self.dataset_index)} training samples")
+
     def _build_dataset_index(self):
         self.dataset_index = []
         for scene in self.scene_info:
@@ -56,7 +66,7 @@ class RGBDDataset(data.Dataset):
                     if len(graph[i][0]) > self.n_frames:
                         self.dataset_index.append((scene, i))
             else:
-                print("Reserving {} for validation".format(scene))
+                logger.info("Reserving {} for validation".format(scene))
 
     @staticmethod
     def image_read(image_file):
@@ -75,7 +85,7 @@ class RGBDDataset(data.Dataset):
 
         poses = np.array(poses)
         intrinsics = np.array(intrinsics) / f
-        
+
         disps = np.stack(list(map(read_disp, depths)), 0)
         d = f * compute_distance_matrix_flow(poses, disps, intrinsics)
 
@@ -112,7 +122,7 @@ class RGBDDataset(data.Dataset):
             # prefer frames forward in time
             if np.count_nonzero(frames[frames > ix]):
                 ix = np.random.choice(frames[frames > ix])
-            
+
             elif np.count_nonzero(frames):
                 ix = np.random.choice(frames)
 
@@ -147,7 +157,7 @@ class RGBDDataset(data.Dataset):
             disps = disps / s
             poses[...,:3] *= s
 
-        return images, poses, disps, intrinsics 
+        return images, poses, disps, intrinsics
 
     def __len__(self):
         return len(self.dataset_index)

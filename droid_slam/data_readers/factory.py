@@ -24,12 +24,10 @@ def dataset_factory(dataset_list, **kwargs):
     for key in dataset_list:
         # cache datasets for faster future loading
         db = dataset_map[key][0](**kwargs)
-
-        print("Dataset {} has {} images".format(key, len(db)))
         db_list.append(db)
-
+    
     return ConcatDataset(db_list)
-            
+
 
 def create_datastream(dataset_path, **kwargs):
     """ create data_loader to stream images 1 by 1 """
@@ -54,7 +52,7 @@ def create_datastream(dataset_path, **kwargs):
     else:
         # db = TartanAirStream(dataset_path, **kwargs)
         db = TartanAirTestStream(dataset_path, **kwargs)
-    
+
     stream = DataLoader(db, shuffle=False, batch_size=1, num_workers=4)
     return stream
 
