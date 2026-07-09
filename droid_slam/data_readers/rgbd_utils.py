@@ -3,6 +3,7 @@ import os.path as osp
 
 import torch
 from lietorch import SE3
+from tqdm import tqdm
 
 import droid_slam.geom.projective_ops as pops
 from scipy.spatial.transform import Rotation
@@ -113,7 +114,7 @@ def compute_distance_matrix_flow(poses, disps, intrinsics):
 
     N = poses.shape[1]
     
-    ii, jj = torch.meshgrid(torch.arange(N), torch.arange(N))
+    ii, jj = torch.meshgrid(torch.arange(N), torch.arange(N), indexing="ij")
     ii = ii.reshape(-1).cuda()
     jj = jj.reshape(-1).cuda()
 
@@ -121,7 +122,7 @@ def compute_distance_matrix_flow(poses, disps, intrinsics):
     matrix = np.zeros((N, N), dtype=np.float32)
 
     s = 2048
-    for i in range(0, ii.shape[0], s):
+    for i in tqdm(range(0, ii.shape[0], s), desc="Computing flow distance matrix", leave=False):
         flow1, val1 = pops.induced_flow(poses, disps, intrinsics, ii[i:i+s], jj[i:i+s])
         flow2, val2 = pops.induced_flow(poses, disps, intrinsics, jj[i:i+s], ii[i:i+s])
         
@@ -153,7 +154,7 @@ def compute_distance_matrix_flow2(poses, disps, intrinsics, beta=0.4):
 
     N = poses.shape[1]
     
-    ii, jj = torch.meshgrid(torch.arange(N), torch.arange(N))
+    ii, jj = torch.meshgrid(torch.arange(N), torch.arange(N), indexing="ij")
     ii = ii.reshape(-1)
     jj = jj.reshape(-1)
 
