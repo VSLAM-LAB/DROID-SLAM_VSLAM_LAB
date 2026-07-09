@@ -159,6 +159,11 @@ def train(gpu, args):
                 should_keep_training = False
                 break
 
+    if gpu == 0:
+        PATH = 'checkpoints/%s_%06d.pth' % (args.name, total_steps)
+        torch.save(model.state_dict(), PATH)
+        logger.info(f"Saved final checkpoint to '{PATH}'")
+
     dist.destroy_process_group()
 
 
