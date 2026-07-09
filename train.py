@@ -86,6 +86,7 @@ def train(gpu, args):
     train_logger = Logger(args.name, scheduler)
     should_keep_training = True
     total_steps = 0
+    epoch = 0
 
     logger.info("=" * 60)
     logger.info(f"[train] start train loop")
@@ -94,6 +95,8 @@ def train(gpu, args):
                 f"{len(train_loader)} batches/pass (batch_size={args.batch})")
     logger.info("=" * 60)
     while should_keep_training:
+        train_sampler.set_epoch(epoch)
+        epoch += 1
         for i_batch, item in enumerate(train_loader):
             optimizer.zero_grad()
 
