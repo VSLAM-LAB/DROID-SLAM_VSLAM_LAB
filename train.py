@@ -107,7 +107,7 @@ def train(gpu, args):
             Gs = SE3.IdentityLike(Ps)
 
             # randomize frame graph
-            if np.random.rand() < 0.5:
+            if rng.random() < 0.5:
                 graph = build_frame_graph(poses, disps, intrinsics, num=args.edges)
 
             else:
