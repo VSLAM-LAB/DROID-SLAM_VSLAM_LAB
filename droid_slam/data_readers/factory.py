@@ -3,8 +3,12 @@ import pickle
 import os
 import os.path as osp
 
+from loguru import logger
+
+
 # RGBD-Dataset
 from .tartan import TartanAir
+from .vslamlab import VSLAMLAB
 
 from .stream import ImageStream
 from .stream import StereoStream
@@ -16,16 +20,19 @@ from .tartan import TartanAirTestStream
 
 def dataset_factory(dataset_list, **kwargs):
     """ create a combined dataset """
+    logger.info("=" * 60)
+    logger.info(f"[dataset_factory] called with dataset_list={dataset_list}")
+    logger.info("=" * 60)
 
     from torch.utils.data import ConcatDataset
 
-    dataset_map = { 'tartan': (TartanAir, ) }
+    dataset_map = { 'tartan': (TartanAir, ), 'vslamlab': (VSLAMLAB, ) }
     db_list = []
     for key in dataset_list:
         # cache datasets for faster future loading
         db = dataset_map[key][0](**kwargs)
         db_list.append(db)
-    
+
     return ConcatDataset(db_list)
 
 

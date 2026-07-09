@@ -14,6 +14,7 @@ import pickle
 import os.path as osp
 
 from loguru import logger
+from tqdm import tqdm
 
 from .augmentation import RGBDAugmentor
 from .rgbd_utils import *
@@ -86,7 +87,7 @@ class RGBDDataset(data.Dataset):
         poses = np.array(poses)
         intrinsics = np.array(intrinsics) / f
 
-        disps = np.stack(list(map(read_disp, depths)), 0)
+        disps = np.stack([read_disp(fn) for fn in tqdm(depths, desc="Reading depths", leave=False)], 0)
         d = f * compute_distance_matrix_flow(poses, disps, intrinsics)
 
         # uncomment for nice visualization
