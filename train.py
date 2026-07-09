@@ -69,9 +69,9 @@ def train(gpu, args):
                                f"{tuple(state_dict[key].shape)} to first 2 output channels.")
                 state_dict[key] = state_dict[key][:2]
         model.load_state_dict(state_dict)
-    exit(0)
+
     # fetch dataloader
-    db = dataset_factory(['tartan'], datapath=args.datapath, n_frames=args.n_frames, fmin=args.fmin, fmax=args.fmax)
+    db = dataset_factory(args.datasets, datapath=args.datapath, n_frames=args.n_frames, fmin=args.fmin, fmax=args.fmax)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         db, shuffle=True, num_replicas=args.world_size, rank=gpu)
@@ -87,6 +87,12 @@ def train(gpu, args):
     should_keep_training = True
     total_steps = 0
 
+    logger.info("=" * 60)
+    logger.info(f"[train] start train loop")
+    logger.info(f"[rank {gpu}] dataset: {len(db)} anchors total, "
+                f"{len(train_sampler)} assigned to this rank, "
+                f"{len(train_loader)} batches/pass (batch_size={args.batch})")
+    logger.info("=" * 60)
     while should_keep_training:
         for i_batch, item in enumerate(train_loader):
             optimizer.zero_grad()
@@ -111,11 +117,9 @@ def train(gpu, args):
             Gs.data[:,1:] = Ps.data[:,[1]].clone()
             disp0 = torch.ones_like(disps[:,:,3::8,3::8])
 
-            # perform random restarts
-            r = 0
-            while r < args.restart_prob:
-                r = rng.random()
-
+            # perform random restarts (always runs at least once, then repeats with
+            # probability restart_prob)
+            while True:
                 intrinsics0 = intrinsics / 8.0
                 poses_est, disps_est, residuals = model(Gs, images, disp0, intrinsics0,
                     graph, num_steps=args.iters, fixedp=2)
@@ -129,6 +133,9 @@ def train(gpu, args):
 
                 Gs = poses_est[-1].detach()
                 disp0 = disps_est[-1][:,:,3::8,3::8].detach()
+
+                if rng.random() >= args.restart_prob:
+                    break
 
             metrics = {}
             metrics.update(geo_metrics)
