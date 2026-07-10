@@ -179,7 +179,7 @@ if __name__ == '__main__':
     parser.add_argument('--ckpt', help='checkpoint to restore')
     parser.add_argument('--datasets', nargs='+', help='lists of datasets for training')
     parser.add_argument('--datapath', default='datasets/TartanAir', help="path to dataset directory")
-    parser.add_argument('--gpus', type=int, default=4)
+    parser.add_argument('--gpus', type=int, default=None, help='number of GPUs to use (default: all available)')
 
     parser.add_argument('--batch', type=int, default=1)
     parser.add_argument('--iters', type=int, default=15)
@@ -202,7 +202,10 @@ if __name__ == '__main__':
     args = parser.parse_args()
 
     available_gpus = torch.cuda.device_count()
-    if args.gpus > available_gpus:
+    if args.gpus is None:
+        args.gpus = available_gpus
+        logger.info(f"--gpus not set; using all {available_gpus} available GPU(s).")
+    elif args.gpus > available_gpus:
         logger.error(f"Requested --gpus={args.gpus} but only {available_gpus} GPU(s) are available.")
         raise SystemExit(1)
     elif args.gpus < available_gpus:
