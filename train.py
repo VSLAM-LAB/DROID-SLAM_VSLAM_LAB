@@ -2,6 +2,8 @@ import sys
 sys.path.append('droid_slam')
 
 import socket
+import time
+from datetime import timedelta
 from loguru import logger
 import cv2
 import numpy as np
@@ -19,7 +21,7 @@ from geom.graph_utils import build_frame_graph
 
 # network
 from droid_net import DroidNet
-from logger import Logger
+from logger import Logger, SUM_FREQ
 
 # DDP training
 import torch.multiprocessing as mp
@@ -88,6 +90,9 @@ def train(gpu, args):
     total_steps = 0
     epoch = 0
 
+    train_start_time = time.time()
+    avg_step_time = 0.0
+
     logger.info("=" * 60)
     logger.info(f"[train] start train loop")
     logger.info(f"[rank {gpu}] dataset: {len(db)} anchors total, "
@@ -98,6 +103,7 @@ def train(gpu, args):
         train_sampler.set_epoch(epoch)
         epoch += 1
         for i_batch, item in enumerate(train_loader):
+            step_start_time = time.time()
             optimizer.zero_grad()
 
             images, poses, disps, intrinsics = [x.to('cuda') for x in item]
@@ -151,8 +157,21 @@ def train(gpu, args):
 
             total_steps += 1
 
+            step_time = time.time() - step_start_time
+            avg_step_time += (step_time - avg_step_time) / total_steps
+
             if gpu == 0:
                 train_logger.push(metrics)
+
+                if total_steps % SUM_FREQ == 0:
+                    elapsed = time.time() - train_start_time
+                    steps_left = args.steps - total_steps
+                    eta = avg_step_time * steps_left
+                    logger.info(f"[step {total_steps}/{args.steps}] "
+                                f"time/step={avg_step_time:.3f}s "
+                                f"elapsed={timedelta(seconds=int(elapsed))} "
+                                f"eta={timedelta(seconds=int(eta))} "
+                                f"steps_left={steps_left}")
 
             if total_steps % 10000 == 0 and gpu == 0:
                 PATH = 'checkpoints/%s_%06d.pth' % (args.name, total_steps)
