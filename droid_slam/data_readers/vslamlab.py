@@ -1,6 +1,4 @@
 
-from turtle import pd
-
 import numpy as np
 import yaml
 import torch

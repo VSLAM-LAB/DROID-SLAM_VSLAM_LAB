@@ -48,8 +48,13 @@ class RGBDDataset(data.Dataset):
         else:
             logger.info(f"No cache found at '{cache_path}', building dataset index")
             scene_info = self._build_dataset()
-            with open(cache_path, 'wb') as cachefile:
+            # write to a per-process temp file then atomically rename into place, so
+            # concurrent DDP ranks racing to build the same cache never interleave
+            # writes and leave a corrupted pickle behind
+            tmp_path = f"{cache_path}.{os.getpid()}.tmp"
+            with open(tmp_path, 'wb') as cachefile:
                 pickle.dump((scene_info,), cachefile)
+            os.replace(tmp_path, cache_path)
 
         self.scene_info = scene_info
         self._build_dataset_index()

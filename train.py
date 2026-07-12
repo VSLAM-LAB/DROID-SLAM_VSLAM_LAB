@@ -63,7 +63,7 @@ def train(gpu, args):
     model = DDP(model, device_ids=[gpu], find_unused_parameters=False)
 
     if args.ckpt is not None:
-        state_dict = torch.load(args.ckpt)
+        state_dict = torch.load(args.ckpt, map_location=f'cuda:{gpu}')
         for key in ["module.update.weight.2.weight", "module.update.weight.2.bias",
                     "module.update.delta.2.weight", "module.update.delta.2.bias"]:
             if key in state_dict and state_dict[key].shape[0] > 2:

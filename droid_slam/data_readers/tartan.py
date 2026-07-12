@@ -65,7 +65,7 @@ class TartanAir(RGBDDataset):
     @staticmethod
     def depth_read(depth_file):
         depth = np.load(depth_file) / TartanAir.DEPTH_SCALE
-        depth[depth==np.nan] = 1.0
+        depth[np.isnan(depth)] = 1.0
         depth[depth==np.inf] = 1.0
         return depth
 
