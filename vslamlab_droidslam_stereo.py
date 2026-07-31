@@ -16,6 +16,7 @@ sys.path.append('droid_slam')
 from droid_slam.droid import Droid
 
 timestamps = []
+DROID_STEREO_BASELINE_M = 0.1
 
 def show_image(image):
     image = image.permute(1, 2, 0).cpu().numpy()
@@ -73,14 +74,22 @@ def load_calibration(calibration_yaml: Path, cam_l_name: str, cam_r_name: str, t
     map_l = cv2.initUndistortRectifyMap(K['l'], D['l'], R_l, P_l[:3,:3], (w, h), cv2.CV_32F)
     map_r = cv2.initUndistortRectifyMap(K['r'], D['r'], R_r, P_r[:3,:3], (w, h), cv2.CV_32F)
 
-    return P_l[0:3,0:3], map_l, map_r
+    baseline = float(np.linalg.norm(t_01_B))
+    if not np.isfinite(baseline) or baseline <= 0.0:
+        raise ValueError(f"Invalid stereo baseline computed from calibration: {baseline}")
+
+    return P_l[0:3,0:3], map_l, map_r, baseline
 
 def image_stream(sequence_path: Path, rgb_csv: Path, calibration_yaml: Path, 
-                 cam_l_name = "rgb_0" , cam_r_name = "rgb_1", target_pixels: int = 384*512):
+                 cam_l_name = "rgb_0" , cam_r_name = "rgb_1", target_pixels: int = 384*512,
+                 calibration=None):
     """ image generator """ 
     global timestamps 
-    K, map_l, map_r= load_calibration(calibration_yaml = calibration_yaml, 
-                                         cam_l_name = cam_l_name, cam_r_name = cam_r_name)
+    if calibration is None:
+        calibration = load_calibration(calibration_yaml=calibration_yaml,
+                                       cam_l_name=cam_l_name, cam_r_name=cam_r_name,
+                                       target_pixels=target_pixels)
+    K, map_l, map_r, _ = calibration
 
     # Load rgb images
     df = pd.read_csv(rgb_csv)       
@@ -153,12 +162,18 @@ def main():
     args.stereo = True
     args.depth = False
     cam_names = S.get('cam_stereo',  ["rgb_0", "rgb_1"])
+    calibration = load_calibration(calibration_yaml=args.calibration_yaml,
+                                   cam_l_name=cam_names[0], cam_r_name=cam_names[1])
+    baseline = calibration[3]
+    translation_scale = baseline / DROID_STEREO_BASELINE_M
+    print(f"Stereo baseline: {baseline:.6f} m; translation scale: {translation_scale:.6f}")
     
     torch.multiprocessing.set_start_method('spawn')
 
     droid = None
     for (t, image, intrinsics) in tqdm(image_stream(args.sequence_path, args.rgb_csv, args.calibration_yaml,
-                                                    cam_l_name=cam_names[0], cam_r_name=cam_names[1])):
+                                                    cam_l_name=cam_names[0], cam_r_name=cam_names[1],
+                                                    calibration=calibration)):
         if t < args.t0:
             continue
 
@@ -173,7 +188,9 @@ def main():
         droid.track(t, image, intrinsics=intrinsics)
 
     traj_est = droid.terminate(image_stream(args.sequence_path, args.rgb_csv, args.calibration_yaml,
-                                            cam_l_name=cam_names[0], cam_r_name=cam_names[1]))
+                                            cam_l_name=cam_names[0], cam_r_name=cam_names[1],
+                                            calibration=calibration))
+    traj_est[:, :3] *= translation_scale
     
     keyframe_csv = args.exp_folder / f"{args.exp_it.zfill(5)}_KeyFrameTrajectory.csv"
     with open(keyframe_csv, "w", newline="") as f:
