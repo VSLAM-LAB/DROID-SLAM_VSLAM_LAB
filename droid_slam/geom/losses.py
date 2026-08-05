@@ -96,7 +96,7 @@ def flow_loss(Ps, disps, poses_est, disps_est, intrinsics, graph, gamma=0.9):
 
     ii, jj, kk = graph_to_edge_list(graph)
     coords0, val0 = projective_transform(Ps, disps, intrinsics, ii, jj)
-    val0 = val0 * (disps[:,ii] > 0).float().unsqueeze(dim=-1)
+    val0 = val0 * (disps[:,ii] > 0.01).float().unsqueeze(dim=-1)
 
     n = len(poses_est)
     flow_loss = 0.0

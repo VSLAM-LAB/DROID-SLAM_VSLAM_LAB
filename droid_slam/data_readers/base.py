@@ -85,7 +85,11 @@ class RGBDDataset(data.Dataset):
         """ compute optical flow distance between all pairs of frames """
         def read_disp(fn):
             depth = self.__class__.depth_read(fn)[f//2::f, f//2::f]
-            depth[depth < 0.01] = np.mean(depth)
+            depth_far = getattr(self.__class__, 'DEPTH_FAR', None)
+            invalid = depth < 0.01
+            if depth_far is not None:
+                invalid = invalid | (depth >= depth_far)
+            depth[invalid] = depth[~invalid].mean() if (~invalid).any() else np.mean(depth)
             return 1.0 / depth
 
         poses = np.array(poses)
