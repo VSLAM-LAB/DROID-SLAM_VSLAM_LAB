@@ -80,6 +80,11 @@ def train(gpu, args):
 
     train_loader = DataLoader(db, batch_size=args.batch, sampler=train_sampler, num_workers=2)
 
+    if args.epochs is not None:
+        args.steps = int(len(db) * args.epochs / (args.world_size * args.batch))
+        logger.info(f"[rank {gpu}] --epochs={args.epochs} => steps={args.steps} "
+                    f"(M={len(db)} anchors, world_size={args.world_size}, batch={args.batch})")
+
     # fetch optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
@@ -203,6 +208,8 @@ if __name__ == '__main__':
     parser.add_argument('--batch', type=int, default=1)
     parser.add_argument('--iters', type=int, default=15)
     parser.add_argument('--steps', type=int, default=250000)
+    parser.add_argument('--epochs', type=float, default=None,
+                         help='if set, overrides --steps: steps = len(dataset) * epochs / (world_size * batch)')
     parser.add_argument('--lr', type=float, default=0.00025)
     parser.add_argument('--clip', type=float, default=2.5)
     parser.add_argument('--n_frames', type=int, default=7)
