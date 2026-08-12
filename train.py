@@ -73,7 +73,8 @@ def train(gpu, args):
         model.load_state_dict(state_dict)
 
     # fetch dataloader
-    db = dataset_factory(args.datasets, datapath=args.datapath, n_frames=args.n_frames, fmin=args.fmin, fmax=args.fmax)
+    db = dataset_factory(args.datasets, datapath=args.datapath, n_frames=args.n_frames, fmin=args.fmin, fmax=args.fmax,
+                         aug_photo=not args.no_aug_photo, aug_crop=not args.no_aug_crop)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         db, shuffle=True, num_replicas=args.world_size, rank=gpu)
@@ -86,7 +87,7 @@ def train(gpu, args):
                     f"(M={len(db)} anchors, world_size={args.world_size}, batch={args.batch})")
 
     # fetch optimizer
-    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=1e-5)
+    optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
     scheduler = torch.optim.lr_scheduler.OneCycleLR(optimizer,
         args.lr, args.steps, pct_start=0.01, cycle_momentum=False)
 
@@ -211,6 +212,7 @@ if __name__ == '__main__':
     parser.add_argument('--epochs', type=float, default=None,
                          help='if set, overrides --steps: steps = len(dataset) * epochs / (world_size * batch)')
     parser.add_argument('--lr', type=float, default=0.00025)
+    parser.add_argument('--wd', type=float, default=1e-5, help='Adam weight decay')
     parser.add_argument('--clip', type=float, default=2.5)
     parser.add_argument('--n_frames', type=int, default=7)
 
@@ -220,6 +222,10 @@ if __name__ == '__main__':
 
     parser.add_argument('--fmin', type=float, default=8.0)
     parser.add_argument('--fmax', type=float, default=96.0)
+    parser.add_argument('--no_aug_photo', action='store_true',
+                         help='disable photometric augmentation (color jitter / random grayscale)')
+    parser.add_argument('--no_aug_crop', action='store_true',
+                         help='fixed minimal resize before the center crop instead of a random scale')
     parser.add_argument('--noise', action='store_true')
     parser.add_argument('--scale', action='store_true')
     parser.add_argument('--edges', type=int, default=24)

@@ -45,6 +45,16 @@ Only run this once Phase 1 is fully evaluated and a winner is picked. Single sho
 |---|---|---|---|---|---|---|---|---|
 | `eth_phase2` | *(winner lr / 10, TBD)* | 3 | `train = {cmd = 'python train.py --name eth_phase2 --epochs 3 --lr <winner_lr / 10> --datasets vslamlab --datapath ../../../VSLAM-LAB-Benchmark --ckpt checkpoints/<winner_name>_<final_step_count>.pth', cwd = 'Baselines/DROID-SLAM-DEV'}` | — | Blocked on Phase 1 | — | — | Keep only if it beats the Phase 1 winner's ATE. |
 
+## Phase 3 — regularization-off overfit run (from `droid.pth`)
+
+Goal: maximize fit to the ETH training sequences by removing the stochastic/regularizing parts of training, since Phase 1 showed the lr/epochs axis is saturated. Changes vs the Phase 1 center (`eth_lr2e-5_ep8`): photometric augmentation off (`--no_aug_photo`: no color jitter / random grayscale), deterministic fixed-scale resize+center-crop (`--no_aug_crop`), weight decay off (`--wd 0`), and `--fmin 4` to let low-parallax frame pairs be sampled into training windows (`base.py:128`) — note this widens per-window frame choice but does **not** change the anchor count `M`, which depends only on the graph-size-vs-`n_frames` threshold (`base.py:71`). All four changes are sample-time only, so **no `vslamlab.pickle` deletion is needed** (the cached graph is unaffected). Flags added 2026-08-13 (`train.py`, threaded through `dataset_factory` → `RGBDDataset` → `RGBDAugmentor`).
+
+Judge on the `einstein_*` illumination family and the median, not the mean — `ceiling_1`/`kidnap_1`/`mannequin_face_1` are training-insensitive (see Phase 1 findings). Also re-check REPLICA to quantify what pure memorization costs cross-dataset (Phase 1 fine-tunes held it at 0.44–0.53 cm).
+
+| Run name | lr | epochs | Command | Started | Status | Final ckpt file | ATE (ETH) | Comments |
+|---|---|---|---|---|---|---|---|---|
+| `eth_overfit_noaug` | 0.00002 | 8 | `train-overfit = {cmd = 'python train.py --name eth_overfit_noaug --epochs 8 --lr 0.00002 --wd 0 --no_aug_photo --no_aug_crop --fmin 4 --datasets vslamlab --datapath ../../../VSLAM-LAB-Benchmark --ckpt droid.pth', cwd = 'Baselines/DROID-SLAM-DEV'}` | — | Not started | — | — | If photometric aug removal hurts the `einstein_*` family specifically, re-run with `--no_aug_crop --wd 0 --fmin 4` but photometric aug back on to separate the two effects. |
+
 ## Open follow-ups (not yet scheduled)
 
 These are further ideas from `CLAUDE.md`'s "Further training improvements" section, not yet turned into runs:

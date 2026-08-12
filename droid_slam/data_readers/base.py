@@ -20,7 +20,8 @@ from .augmentation import RGBDAugmentor
 from .rgbd_utils import *
 
 class RGBDDataset(data.Dataset):
-    def __init__(self, name, datapath, n_frames=4, crop_size=[384,512], fmin=8.0, fmax=75.0, do_aug=True):
+    def __init__(self, name, datapath, n_frames=4, crop_size=[384,512], fmin=8.0, fmax=75.0, do_aug=True,
+                 aug_photo=True, aug_crop=True):
         """ Base class for RGBD dataset """
         self.aug = None
         self.root = datapath
@@ -31,10 +32,11 @@ class RGBDDataset(data.Dataset):
         self.fmax = fmax # exclude very hard examples
 
         logger.info(f"Building RGBDDataset '{name}' from '{datapath}' "
-                    f"(n_frames={n_frames}, fmin={fmin}, fmax={fmax}, do_aug={do_aug})")
+                    f"(n_frames={n_frames}, fmin={fmin}, fmax={fmax}, do_aug={do_aug}, "
+                    f"aug_photo={aug_photo}, aug_crop={aug_crop})")
 
         if do_aug:
-            self.aug = RGBDAugmentor(crop_size=crop_size)
+            self.aug = RGBDAugmentor(crop_size=crop_size, aug_photo=aug_photo, aug_crop=aug_crop)
 
         # building dataset is expensive, cache so only needs to be performed once
         cur_path = osp.dirname(osp.abspath(__file__))

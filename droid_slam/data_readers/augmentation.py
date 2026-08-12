@@ -7,8 +7,10 @@ import torch.nn.functional as F
 class RGBDAugmentor:
     """ perform augmentation on RGB-D video """
 
-    def __init__(self, crop_size):
+    def __init__(self, crop_size, aug_photo=True, aug_crop=True):
         self.crop_size = crop_size
+        self.aug_photo = aug_photo
+        self.aug_crop = aug_crop
         self.augcolor = transforms.Compose([
             transforms.ToPILImage(),
             transforms.ColorJitter(brightness=0.25, contrast=0.25, saturation=0.25, hue=0.4/3.14),
@@ -26,7 +28,11 @@ class RGBDAugmentor:
             (self.crop_size[0] + 1) / float(ht),
             (self.crop_size[1] + 1) / float(wd)))
 
-        scale = 2 ** np.random.uniform(min_scale, max_scale)
+        if self.aug_crop:
+            scale = 2 ** np.random.uniform(min_scale, max_scale)
+        else:
+            # deterministic: smallest resize that still covers the center crop
+            scale = 2 ** min_scale
         intrinsics = scale * intrinsics
         depths = depths.unsqueeze(dim=1)
 
@@ -54,5 +60,6 @@ class RGBDAugmentor:
         return images[[2,1,0]].reshape(ch, ht, wd, num).permute(3,0,1,2).contiguous()
 
     def __call__(self, images, poses, depths, intrinsics):
-        images = self.color_transform(images)
+        if self.aug_photo:
+            images = self.color_transform(images)
         return self.spatial_transform(images, depths, poses, intrinsics)
