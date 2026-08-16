@@ -144,6 +144,17 @@ def train(gpu, args):
                 flo_loss, flo_metrics = losses.flow_loss(Ps, disps, poses_est, disps_est, intrinsics, graph)
 
                 loss = args.w1 * geo_loss + args.w2 * res_loss + args.w3 * flo_loss
+
+                # consistency branch: second forward on perturbed images from the
+                # same (Gs, disp0) initialization, penalize pose disagreement
+                if args.w4 > 0:
+                    images_pert = (images + args.noise_sigma * torch.randn_like(images)).clamp(0.0, 255.0)
+                    poses_est2, _, _ = model(Gs, images_pert, disp0, intrinsics0,
+                        graph, num_steps=args.iters, fixedp=2)
+
+                    con_loss, con_metrics = losses.consistency_loss(poses_est, poses_est2, graph)
+                    loss = loss + args.w4 * con_loss
+
                 loss.backward()
 
                 Gs = poses_est[-1].detach()
@@ -156,6 +167,8 @@ def train(gpu, args):
             metrics.update(geo_metrics)
             metrics.update(res_metrics)
             metrics.update(flo_metrics)
+            if args.w4 > 0:
+                metrics.update(con_metrics)
 
             torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
             optimizer.step()
@@ -219,6 +232,13 @@ if __name__ == '__main__':
     parser.add_argument('--w1', type=float, default=10.0)
     parser.add_argument('--w2', type=float, default=0.01)
     parser.add_argument('--w3', type=float, default=0.05)
+    parser.add_argument('--w4', type=float, default=0.0,
+                         help='consistency loss weight: if > 0, adds a second forward pass on '
+                              'noise-perturbed images and penalizes pose disagreement between the '
+                              'two branches (roughly doubles training memory/compute)')
+    parser.add_argument('--noise_sigma', type=float, default=5.0,
+                         help='stddev of the Gaussian image noise for the consistency branch, '
+                              'in 0-255 intensity units (only used when --w4 > 0)')
 
     parser.add_argument('--fmin', type=float, default=8.0)
     parser.add_argument('--fmax', type=float, default=96.0)

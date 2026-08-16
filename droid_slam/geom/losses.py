@@ -86,6 +86,36 @@ def residual_loss(residuals, gamma=0.9):
     return residual_loss, {'residual': residual_loss.item()}
 
 
+def consistency_loss(poses_est, poses_est2, graph, gamma=0.9):
+    """ geodesic distance between two pose-estimate branches (no ground truth) """
+
+    ii, jj, kk = graph_to_edge_list(graph)
+
+    n = len(poses_est)
+    consistency_loss = 0.0
+
+    for i in range(n):
+        w = gamma ** (n - i - 1)
+        dG1 = poses_est[i][:,jj] * poses_est[i][:,ii].inv()
+        dG2 = poses_est2[i][:,jj] * poses_est2[i][:,ii].inv()
+
+        d = (dG1 * dG2.inv()).log()
+        tau, phi = d.split([3,3], dim=-1)
+        consistency_loss += w * (
+            tau.norm(dim=-1).mean() +
+            phi.norm(dim=-1).mean())
+
+    dE = Sim3(dG1 * dG2.inv()).detach()
+    r_err, t_err, s_err = pose_metrics(dE)
+
+    metrics = {
+        'con_rot_error': r_err.mean().item(),
+        'con_tr_error': t_err.mean().item(),
+    }
+
+    return consistency_loss, metrics
+
+
 def flow_loss(Ps, disps, poses_est, disps_est, intrinsics, graph, gamma=0.9):
     """ optical flow loss """
 
