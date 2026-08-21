@@ -1,4 +1,5 @@
 
+import hashlib
 import numpy as np
 import yaml
 import torch
@@ -32,10 +33,19 @@ class VSLAMLAB(RGBDDataset):
     # unknown but at least the saturation cap; treat them as far (~0 disparity), not near
     DEPTH_FAR = 1e3
 
-    def __init__(self, mode='training', **kwargs):
+    def __init__(self, mode='training', scenes_yaml='gt.yaml', name='vslamlab_gt', **kwargs):
         self.mode = mode
         self.n_frames = 2
-        super(VSLAMLAB, self).__init__(name='vslamlab', **kwargs)
+        self.scenes_yaml = scenes_yaml
+
+        # hash the scene-list yaml's content into the cache name: base.py keys the
+        # pickle cache purely by name, so without this an edited yaml would keep
+        # loading a stale cache
+        yaml_path = osp.join(kwargs['datapath'], scenes_yaml)
+        with open(yaml_path, 'rb') as f:
+            yaml_hash = hashlib.md5(f.read()).hexdigest()[:8]
+
+        super(VSLAMLAB, self).__init__(name=f"{name}.{yaml_hash}", **kwargs)
 
     @staticmethod
     def is_test_scene(scene):
@@ -48,38 +58,35 @@ class VSLAMLAB(RGBDDataset):
         scene_info = {}
 
         import yaml
-        scenes_yaml = osp.join(self.root, 'scenes.yaml')
+        scenes_yaml = osp.join(self.root, self.scenes_yaml)
         with open(scenes_yaml, 'r') as f:
             scenes_config = yaml.safe_load(f)
 
-        import pandas as pd
         for key, sequences in scenes_config.items():
             for scene in sequences:
                 scene_path = Path(osp.join(self.root, key.upper(), scene))
 
                 rgb_csv = scene_path / 'rgb.csv'
                 logger.info(f"Processing scene: {scene_path}")
+                import pandas as pd
                 df = pd.read_csv(rgb_csv)
                 image_list = df[f'path_rgb_0'].to_list()
                 depth_list = df[f'path_depth_0'].to_list()
                 images = [scene_path / image for image in image_list]
                 depths = [scene_path / depth for depth in depth_list]
 
-                gt_csv = scene_path / 'groundtruth.csv'
-                gt_df = pd.read_csv(gt_csv)
-                poses = gt_df[['tx (m)', 'ty (m)', 'tz (m)', 'qx', 'qy', 'qz', 'qw']].values
-
-                poses[:,:3] /= VSLAMLAB.DEPTH_SCALE
+                poses = self._load_poses(scene_path, len(images))
 
                 calibration_yaml = scene_path / 'calibration.yaml'
                 calibration = VSLAMLAB.calib_read(calibration_yaml)
                 intrinsics = [calibration[:4]] * len(images)
 
-                # graph of co-visible frames based on flow
-                graph = self.build_frame_graph(poses, depths, intrinsics)
+                graph = self._build_graph(poses, depths, intrinsics)
 
-                scene = '/'.join(scene.split('/'))
-                scene_info[scene] = {'images': images, 'depths': depths,
+                # key by dataset + scene so same-named scenes from different
+                # datasets can't collide
+                scene_key = f"{key.upper()}/{scene}"
+                scene_info[scene_key] = {'images': images, 'depths': depths,
                     'poses': poses, 'intrinsics': intrinsics, 'graph': graph}
 
                 fx, fy, cx, cy, depth_factor = calibration
@@ -88,6 +95,19 @@ class VSLAMLAB(RGBDDataset):
                             f"num_poses={len(poses)} fx={fx:.2f} fy={fy:.2f} cx={cx:.2f} cy={cy:.2f} "
                             f"depth_factor={depth_factor} DEPTH_SCALE={VSLAMLAB.DEPTH_SCALE} saturation={saturation:.4f}")
         return scene_info
+
+    def _load_poses(self, scene_path, num_frames):
+        """ gt path: read groundtruth.csv (assumed row-aligned with rgb.csv, see synch_gt) """
+        import pandas as pd
+        gt_csv = scene_path / 'groundtruth.csv'
+        gt_df = pd.read_csv(gt_csv)
+        poses = gt_df[['tx (m)', 'ty (m)', 'tz (m)', 'qx', 'qy', 'qz', 'qw']].values
+        poses[:, :3] /= VSLAMLAB.DEPTH_SCALE
+        return poses
+
+    def _build_graph(self, poses, depths, intrinsics):
+        """ gt path: co-visibility graph from gt-pose/depth induced flow """
+        return self.build_frame_graph(poses, depths, intrinsics)
 
     @staticmethod
     def calib_read(calibration_yaml: Path):
@@ -139,6 +159,44 @@ class VSLAMLAB(RGBDDataset):
         # rather than near, since we have no information about the true depth
         depth[raw <= 0] = VSLAMLAB.DEPTH_FAR
         return depth
+
+
+class VSLAMLABGTFree(VSLAMLAB):
+    """ Scenes trained WITHOUT groundtruth (consistency loss only): groundtruth.csv
+    is never read — poses are identity placeholders (shape compatibility only; they
+    must never feed a supervised loss) and the co-visibility graph is temporal
+    rather than flow-based. """
+
+    # temporal-graph neighbors: i +/- TEMPORAL_STRIDE * {1..TEMPORAL_K}
+    TEMPORAL_STRIDE = 2
+    TEMPORAL_K = 4
+
+    def __init__(self, scenes_yaml='gt_free.yaml', name='vslamlab_gt_free', **kwargs):
+        super(VSLAMLABGTFree, self).__init__(scenes_yaml=scenes_yaml, name=name, **kwargs)
+
+    def _load_poses(self, scene_path, num_frames):
+        # identity poses (tx ty tz qx qy qz qw)
+        poses = np.zeros((num_frames, 7), dtype=np.float64)
+        poses[:, 6] = 1.0
+        return poses
+
+    def _build_graph(self, poses, depths, intrinsics):
+        """ temporal graph with synthetic distances 16*m for the m-th neighbor, chosen
+        to sit inside the (fmin, fmax) sampling window used in base.py __getitem__;
+        interior frames get 2*TEMPORAL_K neighbors, enough to pass the
+        len(graph[i][0]) > n_frames anchor check for n_frames=7 """
+        N = len(depths)
+        graph = {}
+        for i in range(N):
+            js, ds = [], []
+            for m in range(1, self.TEMPORAL_K + 1):
+                for j in (i - self.TEMPORAL_STRIDE * m, i + self.TEMPORAL_STRIDE * m):
+                    if 0 <= j < N:
+                        js.append(j)
+                        ds.append(16.0 * m)
+            graph[i] = (np.array(js), np.array(ds, dtype=np.float32))
+        return graph
+
 
 class VSLAMLABStream(RGBDStream):
     def __init__(self, datapath, **kwargs):

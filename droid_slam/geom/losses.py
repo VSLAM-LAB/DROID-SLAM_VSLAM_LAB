@@ -87,7 +87,10 @@ def residual_loss(residuals, gamma=0.9):
 
 
 def consistency_loss(poses_est, poses_est2, graph, gamma=0.9):
-    """ geodesic distance between two pose-estimate branches (no ground truth) """
+    """ geodesic distance between two pose-estimate branches (no ground truth).
+    The first branch (poses_est) is the teacher and is detached: gradients only
+    pull the second (student) branch toward it, never both branches toward a
+    degenerate agreement (constant output regardless of input). """
 
     ii, jj, kk = graph_to_edge_list(graph)
 
@@ -96,7 +99,7 @@ def consistency_loss(poses_est, poses_est2, graph, gamma=0.9):
 
     for i in range(n):
         w = gamma ** (n - i - 1)
-        dG1 = poses_est[i][:,jj] * poses_est[i][:,ii].inv()
+        dG1 = (poses_est[i][:,jj] * poses_est[i][:,ii].inv()).detach()
         dG2 = poses_est2[i][:,jj] * poses_est2[i][:,ii].inv()
 
         d = (dG1 * dG2.inv()).log()
@@ -105,6 +108,7 @@ def consistency_loss(poses_est, poses_est2, graph, gamma=0.9):
             tau.norm(dim=-1).mean() +
             phi.norm(dim=-1).mean())
 
+    # metrics from the final GRU iteration's relative-pose disagreement
     dE = Sim3(dG1 * dG2.inv()).detach()
     r_err, t_err, s_err = pose_metrics(dE)
 

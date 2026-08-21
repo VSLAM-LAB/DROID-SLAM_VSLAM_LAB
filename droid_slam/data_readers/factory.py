@@ -8,7 +8,7 @@ from loguru import logger
 
 # RGBD-Dataset
 from .tartan import TartanAir
-from .vslamlab import VSLAMLAB
+from .vslamlab import VSLAMLAB, VSLAMLABGTFree
 
 from .stream import ImageStream
 from .stream import StereoStream
@@ -26,7 +26,8 @@ def dataset_factory(dataset_list, **kwargs):
 
     from torch.utils.data import ConcatDataset
 
-    dataset_map = { 'tartan': (TartanAir, ), 'vslamlab': (VSLAMLAB, ) }
+    dataset_map = { 'tartan': (TartanAir, ), 'vslamlab': (VSLAMLAB, ),
+                    'vslamlab_gt_free': (VSLAMLABGTFree, ) }
     db_list = []
     for key in dataset_list:
         # cache datasets for faster future loading

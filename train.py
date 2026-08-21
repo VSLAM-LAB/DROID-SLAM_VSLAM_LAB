@@ -73,18 +73,46 @@ def train(gpu, args):
         model.load_state_dict(state_dict)
 
     # fetch dataloader
-    db = dataset_factory(args.datasets, datapath=args.datapath, n_frames=args.n_frames, fmin=args.fmin, fmax=args.fmax,
-                         aug_photo=not args.no_aug_photo, aug_crop=not args.no_aug_crop)
+    semi = args.scenes_gt_free is not None
+    dataset_kwargs = dict(datapath=args.datapath, n_frames=args.n_frames, fmin=args.fmin, fmax=args.fmax,
+                          aug_photo=not args.no_aug_photo, aug_crop=not args.no_aug_crop)
+
+    if semi:
+        # semi-supervised: labeled (gt) + gt-free datasets, alternating steps
+        from data_readers.vslamlab import VSLAMLAB, VSLAMLABGTFree
+        db = VSLAMLAB(scenes_yaml=args.scenes_gt, **dataset_kwargs)
+        db_u = VSLAMLABGTFree(scenes_yaml=args.scenes_gt_free, **dataset_kwargs)
+        logger.info(f"[rank {gpu}] semi-supervised: labeled '{args.scenes_gt}' ({len(db)} anchors) "
+                    f"+ gt-free '{args.scenes_gt_free}' ({len(db_u)} anchors); --datasets ignored")
+    else:
+        db = dataset_factory(args.datasets, **dataset_kwargs)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         db, shuffle=True, num_replicas=args.world_size, rank=gpu)
 
     train_loader = DataLoader(db, batch_size=args.batch, sampler=train_sampler, num_workers=2)
 
+    if semi:
+        sampler_u = torch.utils.data.distributed.DistributedSampler(
+            db_u, shuffle=True, num_replicas=args.world_size, rank=gpu)
+        loader_u = DataLoader(db_u, batch_size=args.batch, sampler=sampler_u, num_workers=2)
+
+        def _cycle_unlabeled():
+            epoch_u = 0
+            while True:
+                sampler_u.set_epoch(epoch_u)
+                epoch_u += 1
+                for item_u in loader_u:
+                    yield item_u
+        unlabeled_iter = _cycle_unlabeled()
+
     if args.epochs is not None:
-        args.steps = int(len(db) * args.epochs / (args.world_size * args.batch))
+        labeled_steps = int(len(db) * args.epochs / (args.world_size * args.batch))
+        # in semi mode each labeled batch is followed by one gt-free optimizer step
+        args.steps = 2 * labeled_steps if semi else labeled_steps
         logger.info(f"[rank {gpu}] --epochs={args.epochs} => steps={args.steps} "
-                    f"(M={len(db)} anchors, world_size={args.world_size}, batch={args.batch})")
+                    f"(M={len(db)} anchors, world_size={args.world_size}, batch={args.batch}, "
+                    f"semi={semi})")
 
     # fetch optimizer
     optimizer = torch.optim.Adam(model.parameters(), lr=args.lr, weight_decay=args.wd)
@@ -105,6 +133,40 @@ def train(gpu, args):
                 f"{len(train_sampler)} assigned to this rank, "
                 f"{len(train_loader)} batches/pass (batch_size={args.batch})")
     logger.info("=" * 60)
+
+    def finish_step(metrics, step_start_time):
+        """ shared per-optimizer-step bookkeeping: clip, step, schedule, log, checkpoint """
+        nonlocal total_steps, avg_step_time, should_keep_training
+
+        torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
+        optimizer.step()
+        scheduler.step()
+
+        total_steps += 1
+
+        step_time = time.time() - step_start_time
+        avg_step_time += (step_time - avg_step_time) / total_steps
+
+        if gpu == 0:
+            train_logger.push(metrics)
+
+            if total_steps % SUM_FREQ == 0:
+                elapsed = time.time() - train_start_time
+                steps_left = args.steps - total_steps
+                eta = avg_step_time * steps_left
+                logger.info(f"[step {total_steps}/{args.steps}] "
+                            f"time/step={avg_step_time:.3f}s "
+                            f"elapsed={timedelta(seconds=int(elapsed))} "
+                            f"eta={timedelta(seconds=int(eta))} "
+                            f"steps_left={steps_left}")
+
+        if total_steps % 10000 == 0 and gpu == 0:
+            PATH = 'checkpoints/%s_%06d.pth' % (args.name, total_steps)
+            torch.save(model.state_dict(), PATH)
+
+        if total_steps >= args.steps:
+            should_keep_training = False
+
     while should_keep_training:
         train_sampler.set_epoch(epoch)
         epoch += 1
@@ -147,7 +209,8 @@ def train(gpu, args):
 
                 # consistency branch: second forward on perturbed images from the
                 # same (Gs, disp0) initialization, penalize pose disagreement
-                if args.w4 > 0:
+                # (in semi mode consistency runs on the gt-free steps instead)
+                if args.w4 > 0 and not semi:
                     images_pert = (images + args.noise_sigma * torch.randn_like(images)).clamp(0.0, 255.0)
                     poses_est2, _, _ = model(Gs, images_pert, disp0, intrinsics0,
                         graph, num_steps=args.iters, fixedp=2)
@@ -167,38 +230,59 @@ def train(gpu, args):
             metrics.update(geo_metrics)
             metrics.update(res_metrics)
             metrics.update(flo_metrics)
-            if args.w4 > 0:
+            if args.w4 > 0 and not semi:
                 metrics.update(con_metrics)
 
-            torch.nn.utils.clip_grad_norm_(model.parameters(), args.clip)
-            optimizer.step()
-            scheduler.step()
-
-            total_steps += 1
-
-            step_time = time.time() - step_start_time
-            avg_step_time += (step_time - avg_step_time) / total_steps
-
-            if gpu == 0:
-                train_logger.push(metrics)
-
-                if total_steps % SUM_FREQ == 0:
-                    elapsed = time.time() - train_start_time
-                    steps_left = args.steps - total_steps
-                    eta = avg_step_time * steps_left
-                    logger.info(f"[step {total_steps}/{args.steps}] "
-                                f"time/step={avg_step_time:.3f}s "
-                                f"elapsed={timedelta(seconds=int(elapsed))} "
-                                f"eta={timedelta(seconds=int(eta))} "
-                                f"steps_left={steps_left}")
-
-            if total_steps % 10000 == 0 and gpu == 0:
-                PATH = 'checkpoints/%s_%06d.pth' % (args.name, total_steps)
-                torch.save(model.state_dict(), PATH)
-
-            if total_steps >= args.steps:
-                should_keep_training = False
+            finish_step(metrics, step_start_time)
+            if not should_keep_training:
                 break
+
+            if semi:
+                # gt-free consistency step: teacher forward on clean images (no
+                # grad), student forward on noise-perturbed images; the loss pulls
+                # the student's relative poses toward the teacher's
+                step_start_time = time.time()
+                optimizer.zero_grad()
+
+                images, poses, disps, intrinsics = [x.to('cuda') for x in next(unlabeled_iter)]
+
+                # poses are identity placeholders (no gt) — shapes only, never
+                # fed to a supervised loss
+                Ps = SE3(poses).inv()
+                Gs = SE3.IdentityLike(Ps)
+
+                # temporal neighbor graph; no gt available to build a flow graph
+                graph = OrderedDict()
+                for i in range(N):
+                    graph[i] = [j for j in range(N) if i != j and abs(i-j) <= 2]
+
+                disp0 = torch.ones_like(disps[:, :, 3::8, 3::8])
+                intrinsics0 = intrinsics / 8.0
+
+                # fixedp=1: fix only the gauge frame; fixedp=2 would freeze two
+                # identity poses and pin the 0->1 baseline to zero
+                with torch.no_grad():
+                    poses_tea, _, _ = model(Gs, images, disp0, intrinsics0,
+                        graph, num_steps=args.iters, fixedp=1)
+
+                images_pert = (images + args.noise_sigma * torch.randn_like(images)).clamp(0.0, 255.0)
+                poses_stu, disps_stu, _ = model(Gs, images_pert, disp0, intrinsics0,
+                    graph, num_steps=args.iters, fixedp=1)
+
+                con_loss, con_metrics = losses.consistency_loss(poses_tea, poses_stu, graph)
+
+                ramp = min(1.0, total_steps / args.con_ramp) if args.con_ramp > 0 else 1.0
+                # the 0-weighted disparity term keeps the upsample-mask head in the
+                # autograd graph (DDP runs with find_unused_parameters=False)
+                loss = args.w4 * ramp * con_loss + 0.0 * disps_stu[-1].mean()
+                loss.backward()
+
+                metrics = {'gt_free/' + k: v for k, v in con_metrics.items()}
+                metrics['gt_free/con_loss'] = con_loss.item()
+
+                finish_step(metrics, step_start_time)
+                if not should_keep_training:
+                    break
 
     if gpu == 0:
         PATH = 'checkpoints/%s_%06d.pth' % (args.name, total_steps)
@@ -239,6 +323,17 @@ if __name__ == '__main__':
     parser.add_argument('--noise_sigma', type=float, default=5.0,
                          help='stddev of the Gaussian image noise for the consistency branch, '
                               'in 0-255 intensity units (only used when --w4 > 0)')
+    parser.add_argument('--scenes_gt', default='gt.yaml',
+                         help='scene-list yaml (relative to --datapath) for labeled scenes '
+                              'with usable groundtruth.csv')
+    parser.add_argument('--scenes_gt_free', default=None,
+                         help='if set, enables semi-supervised alternating training: each '
+                              'labeled batch is followed by one consistency-only step on a '
+                              'batch from this gt-free scene-list yaml (relative to '
+                              '--datapath); requires --w4 > 0 to have any effect')
+    parser.add_argument('--con_ramp', type=int, default=2000,
+                         help='linearly ramp the consistency weight w4 from 0 to full over '
+                              'this many optimizer steps (0 disables the ramp)')
 
     parser.add_argument('--fmin', type=float, default=8.0)
     parser.add_argument('--fmax', type=float, default=96.0)
@@ -252,6 +347,11 @@ if __name__ == '__main__':
     parser.add_argument('--restart_prob', type=float, default=0.2)
 
     args = parser.parse_args()
+
+    if args.scenes_gt_free is not None and args.w4 <= 0:
+        logger.error("--scenes_gt_free requires --w4 > 0: the gt-free steps train "
+                     "with the consistency loss only, so w4=0 would make them no-ops.")
+        raise SystemExit(1)
 
     available_gpus = torch.cuda.device_count()
     if args.gpus is None:
