@@ -33,6 +33,8 @@ class VSLAMLAB(RGBDDataset):
     # unknown but at least the saturation cap; treat them as far (~0 disparity), not near
     DEPTH_FAR = 1e3
 
+    CACHE_VERSION = ''
+
     def __init__(self, mode='training', scenes_yaml='gt.yaml', cache_suffix='', **kwargs):
         self.mode = mode
         self.n_frames = 2
@@ -45,8 +47,11 @@ class VSLAMLAB(RGBDDataset):
         with open(yaml_path, 'rb') as f:
             yaml_hash = hashlib.md5(f.read()).hexdigest()
         name = Path(scenes_yaml).stem + cache_suffix
+        # CACHE_VERSION (class attr) is folded into the stamp: bump it whenever the
+        # scene_info layout produced by _build_dataset changes, so old caches rebuild
+        stamp = yaml_hash + (f":{self.CACHE_VERSION}" if self.CACHE_VERSION else "")
 
-        super(VSLAMLAB, self).__init__(name=name, cache_stamp=yaml_hash, **kwargs)
+        super(VSLAMLAB, self).__init__(name=name, cache_stamp=stamp, **kwargs)
 
     @staticmethod
     def is_test_scene(scene):
@@ -88,7 +93,8 @@ class VSLAMLAB(RGBDDataset):
                 # datasets can't collide
                 scene_key = f"{key.upper()}/{scene}"
                 scene_info[scene_key] = {'images': images, 'depths': depths,
-                    'poses': poses, 'intrinsics': intrinsics, 'graph': graph}
+                    'poses': poses, 'intrinsics': intrinsics, 'graph': graph,
+                    'has_gt': self._has_gt(scene_path)}
 
                 fx, fy, cx, cy, depth_factor = calibration
                 saturation = (65535.0 / depth_factor) / VSLAMLAB.DEPTH_SCALE
@@ -96,6 +102,10 @@ class VSLAMLAB(RGBDDataset):
                             f"num_poses={len(poses)} fx={fx:.2f} fy={fy:.2f} cx={cx:.2f} cy={cy:.2f} "
                             f"depth_factor={depth_factor} DEPTH_SCALE={VSLAMLAB.DEPTH_SCALE} saturation={saturation:.4f}")
         return scene_info
+
+    def _has_gt(self, scene_path):
+        """ whether 'poses' in scene_info are real groundtruth (labeled reader: always) """
+        return True
 
     def _load_poses(self, scene_path, num_frames):
         """ gt path: read groundtruth.csv (assumed row-aligned with rgb.csv, see synch_gt) """
@@ -163,25 +173,46 @@ class VSLAMLAB(RGBDDataset):
 
 
 class VSLAMLABGTFree(VSLAMLAB):
-    """ Scenes trained WITHOUT groundtruth (consistency loss only): groundtruth.csv
-    is never read — poses are identity placeholders (shape compatibility only; they
-    must never feed a supervised loss) and the co-visibility graph is temporal
-    rather than flow-based. """
+    """ Scenes trained WITHOUT groundtruth (consistency loss only). Poses never
+    feed a loss or the pose initialization and the co-visibility graph is temporal
+    rather than flow-based. If a scene has a groundtruth.csv it is still loaded,
+    but strictly as an oracle for the gt_free/val_* metrics in train.py (has_gt
+    flag returned per item); scenes without one get identity placeholders and are
+    excluded from those metrics. """
 
     # temporal-graph neighbors: i +/- TEMPORAL_STRIDE * {1..TEMPORAL_K}
     TEMPORAL_STRIDE = 2
     TEMPORAL_K = 4
 
+    # v2: poses are gt when available (were always identity), has_gt added
+    CACHE_VERSION = 'v2'
+
     def __init__(self, scenes_yaml='gt_free.yaml', **kwargs):
         # separate cache from the labeled reader of the same yaml (eth.yaml ->
-        # eth_gt_free.pickle): identity poses + temporal graph, not gt + flow graph
+        # eth_gt_free.pickle): temporal graph, not the gt-induced flow graph
         super(VSLAMLABGTFree, self).__init__(scenes_yaml=scenes_yaml, cache_suffix='_gt_free', **kwargs)
+        n_gt = sum(bool(s['has_gt']) for s in self.scene_info.values())
+        logger.info(f"gt-free dataset: {n_gt}/{len(self.scene_info)} scenes have a groundtruth.csv "
+                    f"(used only for gt_free/val_* metrics, never for training)")
+
+    def _has_gt(self, scene_path):
+        return (scene_path / 'groundtruth.csv').exists()
 
     def _load_poses(self, scene_path, num_frames):
-        # identity poses (tx ty tz qx qy qz qw)
+        if self._has_gt(scene_path):
+            return super(VSLAMLABGTFree, self)._load_poses(scene_path, num_frames)
+        # identity placeholders (tx ty tz qx qy qz qw)
         poses = np.zeros((num_frames, 7), dtype=np.float64)
         poses[:, 6] = 1.0
         return poses
+
+    def __getitem__(self, index):
+        """ (images, poses, disps, intrinsics, has_gt): has_gt tells train.py whether
+        poses are usable as a metric reference for this window """
+        images, poses, disps, intrinsics = super(VSLAMLABGTFree, self).__getitem__(index)
+        scene_id, _ = self.dataset_index[index % len(self.dataset_index)]
+        has_gt = torch.tensor(bool(self.scene_info[scene_id]['has_gt']))
+        return images, poses, disps, intrinsics, has_gt
 
     def _build_graph(self, poses, depths, intrinsics):
         """ temporal graph with synthetic distances 16*m for the m-th neighbor, chosen

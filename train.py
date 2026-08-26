@@ -244,10 +244,11 @@ def train(gpu, args):
                 step_start_time = time.time()
                 optimizer.zero_grad()
 
-                images, poses, disps, intrinsics = [x.to('cuda') for x in next(unlabeled_iter)]
+                images, poses, disps, intrinsics, has_gt = [x.to('cuda') for x in next(unlabeled_iter)]
 
-                # poses are identity placeholders (no gt) — shapes only, never
-                # fed to a supervised loss
+                # poses are gt (if the scene has one) or identity placeholders; they
+                # are used ONLY as a no_grad metric reference below — never for the
+                # initialization (always identity) nor for any loss
                 Ps = SE3(poses).inv()
                 Gs = SE3.IdentityLike(Ps)
 
@@ -279,6 +280,17 @@ def train(gpu, args):
 
                 metrics = {'gt_free/' + k: v for k, v in con_metrics.items()}
                 metrics['gt_free/con_loss'] = con_loss.item()
+
+                # oracle accuracy on the gt-free window (same relative-pose metric as
+                # the labeled step's rot_error/tr_error, final iteration, no scale
+                # fit): does consistency training move accuracy, not just stability?
+                # teacher = clean images (what inference sees), student = perturbed
+                if bool(has_gt.all()):
+                    with torch.no_grad():
+                        _, val_tea = losses.geodesic_loss(Ps, [poses_tea[-1]], graph, do_scale=False)
+                        _, val_stu = losses.geodesic_loss(Ps, [poses_stu[-1]], graph, do_scale=False)
+                    metrics.update({'gt_free/val_tea_' + k: v for k, v in val_tea.items()})
+                    metrics.update({'gt_free/val_stu_' + k: v for k, v in val_stu.items()})
 
                 finish_step(metrics, step_start_time)
                 if not should_keep_training:
