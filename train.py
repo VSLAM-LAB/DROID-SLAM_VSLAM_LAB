@@ -85,7 +85,7 @@ def train(gpu, args):
         logger.info(f"[rank {gpu}] semi-supervised: labeled '{args.scenes_gt}' ({len(db)} anchors) "
                     f"+ gt-free '{args.scenes_gt_free}' ({len(db_u)} anchors); --datasets ignored")
     else:
-        db = dataset_factory(args.datasets, **dataset_kwargs)
+        db = dataset_factory(args.datasets, scenes_gt=args.scenes_gt, **dataset_kwargs)
 
     train_sampler = torch.utils.data.distributed.DistributedSampler(
         db, shuffle=True, num_replicas=args.world_size, rank=gpu)
