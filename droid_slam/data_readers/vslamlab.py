@@ -33,19 +33,20 @@ class VSLAMLAB(RGBDDataset):
     # unknown but at least the saturation cap; treat them as far (~0 disparity), not near
     DEPTH_FAR = 1e3
 
-    def __init__(self, mode='training', scenes_yaml='gt.yaml', name='vslamlab_gt', **kwargs):
+    def __init__(self, mode='training', scenes_yaml='gt.yaml', cache_suffix='', **kwargs):
         self.mode = mode
         self.n_frames = 2
         self.scenes_yaml = scenes_yaml
 
-        # hash the scene-list yaml's content into the cache name: base.py keys the
-        # pickle cache purely by name, so without this an edited yaml would keep
-        # loading a stale cache
+        # cache is named after the scene-list yaml (eth.yaml -> cache/eth.pickle);
+        # the yaml's content hash is stored inside the pickle as a staleness stamp so
+        # an edited yaml triggers a rebuild instead of silently loading the old graph
         yaml_path = osp.join(kwargs['datapath'], scenes_yaml)
         with open(yaml_path, 'rb') as f:
-            yaml_hash = hashlib.md5(f.read()).hexdigest()[:8]
+            yaml_hash = hashlib.md5(f.read()).hexdigest()
+        name = Path(scenes_yaml).stem + cache_suffix
 
-        super(VSLAMLAB, self).__init__(name=f"{name}.{yaml_hash}", **kwargs)
+        super(VSLAMLAB, self).__init__(name=name, cache_stamp=yaml_hash, **kwargs)
 
     @staticmethod
     def is_test_scene(scene):
@@ -171,8 +172,10 @@ class VSLAMLABGTFree(VSLAMLAB):
     TEMPORAL_STRIDE = 2
     TEMPORAL_K = 4
 
-    def __init__(self, scenes_yaml='gt_free.yaml', name='vslamlab_gt_free', **kwargs):
-        super(VSLAMLABGTFree, self).__init__(scenes_yaml=scenes_yaml, name=name, **kwargs)
+    def __init__(self, scenes_yaml='gt_free.yaml', **kwargs):
+        # separate cache from the labeled reader of the same yaml (eth.yaml ->
+        # eth_gt_free.pickle): identity poses + temporal graph, not gt + flow graph
+        super(VSLAMLABGTFree, self).__init__(scenes_yaml=scenes_yaml, cache_suffix='_gt_free', **kwargs)
 
     def _load_poses(self, scene_path, num_frames):
         # identity poses (tx ty tz qx qy qz qw)

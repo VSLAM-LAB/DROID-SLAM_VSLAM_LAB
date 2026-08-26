@@ -23,7 +23,7 @@ def dataset_factory(dataset_list, scenes_gt=None, scenes_gt_free=None, **kwargs)
 
     scenes_gt / scenes_gt_free: scene-list yamls (relative to datapath) for the
     'vslamlab' / 'vslamlab_gt_free' entries; None keeps each class's default
-    ('gt.yaml' / 'gt_free.yaml'). Only forwarded to the VSLAM-LAB readers since
+    ('gt.yaml' / 'gt_free.yaml'; cache = <stem>.pickle / <stem>_gt_free.pickle). Only forwarded to the VSLAM-LAB readers since
     TartanAir has no such argument. """
     logger.info("=" * 60)
     logger.info(f"[dataset_factory] called with dataset_list={dataset_list}")

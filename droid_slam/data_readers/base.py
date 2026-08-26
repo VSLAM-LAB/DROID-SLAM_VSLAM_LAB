@@ -11,6 +11,7 @@ import math
 import random
 import json
 import pickle
+import socket
 import os.path as osp
 
 from loguru import logger
@@ -21,8 +22,11 @@ from .rgbd_utils import *
 
 class RGBDDataset(data.Dataset):
     def __init__(self, name, datapath, n_frames=4, crop_size=[384,512], fmin=8.0, fmax=75.0, do_aug=True,
-                 aug_photo=True, aug_crop=True):
-        """ Base class for RGBD dataset """
+                 aug_photo=True, aug_crop=True, cache_stamp=None):
+        """ Base class for RGBD dataset
+
+        cache_stamp: optional value stored alongside the cached scene_info (e.g. a
+        hash of the scene-list file); the cache is rebuilt when it no longer matches """
         self.aug = None
         self.root = datapath
         self.name = name
@@ -44,18 +48,28 @@ class RGBDDataset(data.Dataset):
 
         cache_path = osp.join(cur_path, 'cache', '{}.pickle'.format(self.name))
 
+        scene_info = None
         if osp.isfile(cache_path):
-            logger.info(f"Loading cached scene info from '{cache_path}'")
-            scene_info = pickle.load(open(cache_path, 'rb'))[0]
+            cached = pickle.load(open(cache_path, 'rb'))
+            # pickle layout: (scene_info, cache_stamp); older caches are (scene_info,)
+            cached_stamp = cached[1] if len(cached) > 1 else None
+            if cached_stamp == cache_stamp:
+                logger.info(f"Loading cached scene info from '{cache_path}'")
+                scene_info = cached[0]
+            else:
+                logger.info(f"Cache '{cache_path}' is stale (stamp {cached_stamp!r} != "
+                            f"{cache_stamp!r}, scene list changed?), rebuilding")
         else:
             logger.info(f"No cache found at '{cache_path}', building dataset index")
+
+        if scene_info is None:
             scene_info = self._build_dataset()
             # write to a per-process temp file then atomically rename into place, so
             # concurrent DDP ranks racing to build the same cache never interleave
             # writes and leave a corrupted pickle behind
-            tmp_path = f"{cache_path}.{os.getpid()}.tmp"
+            tmp_path = f"{cache_path}.{socket.gethostname()}.{os.getpid()}.tmp"
             with open(tmp_path, 'wb') as cachefile:
-                pickle.dump((scene_info,), cachefile)
+                pickle.dump((scene_info, cache_stamp), cachefile)
             os.replace(tmp_path, cache_path)
 
         self.scene_info = scene_info
